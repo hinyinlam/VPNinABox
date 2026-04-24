@@ -38,10 +38,10 @@ if [[ ${#missing[@]} -gt 0 ]]; then
 fi
 
 # ── Flags ─────────────────────────────────────────────────────────────────────
-FORCE_FLAG=""
+FORCE=false
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --force) FORCE_FLAG="--force"; shift ;;
+    --force) FORCE=true; shift ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -52,8 +52,57 @@ ok()   { echo "  ✓ $*"; }
 fail() { echo "  ✗ $*" >&2; exit 1; }
 
 PROVISIONER="${SCRIPT_DIR}/SetupNordVPN/create-nordvpn-lxc.sh"
-[[ -f "$PROVISIONER" ]] || fail "SetupNordVPN/create-nordvpn-lxc.sh not found"
-[[ -x "$PROVISIONER" ]] || chmod +x "$PROVISIONER"
+SETUP_SCRIPT="${SCRIPT_DIR}/SetupNordVPN/nordvpn-setup.sh"
+[[ -f "$PROVISIONER" ]]   || fail "SetupNordVPN/create-nordvpn-lxc.sh not found"
+[[ -f "$SETUP_SCRIPT" ]]  || fail "SetupNordVPN/nordvpn-setup.sh not found"
+[[ -x "$PROVISIONER" ]]   || chmod +x "$PROVISIONER"
+
+pxm_ssh() {
+  sshpass -p "$PROXMOX_PASSWORD" ssh \
+    -o StrictHostKeyChecking=no \
+    -o PreferredAuthentications=password \
+    -o NumberOfPasswordPrompts=1 \
+    "root@${PROXMOX_HOST}" "$@"
+}
+
+pxm_scp() {
+  sshpass -p "$PROXMOX_PASSWORD" scp \
+    -o StrictHostKeyChecking=no \
+    -o PreferredAuthentications=password \
+    -o NumberOfPasswordPrompts=1 \
+    "$@"
+}
+
+lxc_exists() {
+  pxm_ssh "pct status $1 2>/dev/null" 2>/dev/null | grep -qi "running\|stopped"
+}
+
+# Update an existing LXC: push latest setup script and re-run it in place.
+update_node() {
+  local vmid="$1" country="$2" hostname="$3"
+  log "LXC $vmid exists — updating in place (use --force to rebuild from scratch)"
+
+  # Ensure running
+  if ! pxm_ssh "pct status $vmid 2>/dev/null" | grep -qi "running"; then
+    log "  Starting LXC $vmid..."
+    pxm_ssh "pct start $vmid"
+    sleep 5
+  fi
+
+  # Push latest nordvpn-setup.sh
+  pxm_scp "$SETUP_SCRIPT" "root@${PROXMOX_HOST}:/tmp/nordvpn-setup.sh"
+  pxm_ssh "pct push $vmid /tmp/nordvpn-setup.sh /usr/local/bin/nordvpn-setup.sh && \
+    pct exec $vmid -- chmod +x /usr/local/bin/nordvpn-setup.sh && \
+    rm -f /tmp/nordvpn-setup.sh"
+  ok "nordvpn-setup.sh updated in LXC $vmid"
+
+  # Re-run setup (idempotent — no --install needed, NordVPN already present)
+  pxm_ssh "pct exec $vmid -- bash /usr/local/bin/nordvpn-setup.sh \
+    --country '$country' \
+    --subnet  '$SUBNET' \
+    --name    '$hostname' \
+    --login-token '$NORDVPN_TOKEN'"
+}
 
 # ── Provision each node ───────────────────────────────────────────────────────
 # Nodes defined in .env as NODE_1_*, NODE_2_*, ..., NODE_n_*
@@ -80,22 +129,39 @@ for i in $(seq 1 20); do
   log "Node $i: $hostname  |  VMID $vmid  |  IP $node_ip  |  $country"
   log "══════════════════════════════════════════════════════════════"
 
-  # shellcheck disable=SC2086
-  bash "$PROVISIONER" \
-    --proxmox-host     "$PROXMOX_HOST" \
-    --proxmox-password "$PROXMOX_PASSWORD" \
-    --vmid             "$vmid" \
-    --hostname         "$hostname" \
-    --ip               "$node_ip" \
-    --country          "$country" \
-    --subnet           "$SUBNET" \
-    --gateway          "$GATEWAY" \
-    --login-token      "$NORDVPN_TOKEN" \
-    ${FORCE_FLAG}
+  if [[ "$FORCE" == "true" ]]; then
+    # Destroy and recreate
+    bash "$PROVISIONER" \
+      --proxmox-host     "$PROXMOX_HOST" \
+      --proxmox-password "$PROXMOX_PASSWORD" \
+      --vmid             "$vmid" \
+      --hostname         "$hostname" \
+      --ip               "$node_ip" \
+      --country          "$country" \
+      --subnet           "$SUBNET" \
+      --gateway          "$GATEWAY" \
+      --login-token      "$NORDVPN_TOKEN" \
+      --force
+  elif lxc_exists "$vmid"; then
+    # LXC already running — update in place
+    update_node "$vmid" "$country" "$hostname"
+  else
+    # Fresh create
+    bash "$PROVISIONER" \
+      --proxmox-host     "$PROXMOX_HOST" \
+      --proxmox-password "$PROXMOX_PASSWORD" \
+      --vmid             "$vmid" \
+      --hostname         "$hostname" \
+      --ip               "$node_ip" \
+      --country          "$country" \
+      --subnet           "$SUBNET" \
+      --gateway          "$GATEWAY" \
+      --login-token      "$NORDVPN_TOKEN"
+  fi
 
-  ok "Node $i ($hostname) provisioned"
+  ok "Node $i ($hostname) done"
   provisioned_nodes+=("$hostname|$node_ip|$country")
-  ((node_count++))
+  node_count=$((node_count + 1))
 done
 
 if [[ $node_count -eq 0 ]]; then
