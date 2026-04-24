@@ -66,21 +66,27 @@ pct destroy 201 --purge
 
 ### Recreate an LXC from Scratch
 
+Use `SetupNordVPN/create-nordvpn-lxc.sh` — run this from your **local machine**, not the Proxmox host. It handles LXC creation, TUN passthrough, script injection, and full NordVPN setup in one command.
+
 ```bash
-pct create 201 /var/lib/vz/template/cache/debian-12-standard_12.12-1_amd64.tar.zst \
-  --hostname nordvpn-us \
-  --arch amd64 --cores 2 --memory 1024 --swap 512 \
-  --rootfs local-zfs:8 \
-  --net0 name=eth0,bridge=vmbr0,gw=192.168.1.1,ip=192.168.1.51/24,type=veth \
-  --features keyctl=1,nesting=1 \
-  --unprivileged 1 --onboot 1 --startup order=11,up=35 --ostype debian
+# Rebuild US exit node (destroys existing LXC 201 first)
+./SetupNordVPN/create-nordvpn-lxc.sh \
+  --proxmox-password 'P@ssw0rd' \
+  --vmid 201 --hostname nordvpn-us --ip 192.168.1.51 \
+  --country US \
+  --login-token '<PAT from 1Password → AIBot → NordVPN Access Token 2>' \
+  --force
 
-# Required: TUN device passthrough so NordVPN can open /dev/net/tun
-printf 'lxc.cgroup2.devices.allow: c 10:200 rwm\nlxc.mount.entry: /dev/net dev/net none bind,create=dir\n' \
-  >> /etc/pve/lxc/201.conf
-
-pct start 201
+# Create Taiwan exit node
+./SetupNordVPN/create-nordvpn-lxc.sh \
+  --proxmox-password 'P@ssw0rd' \
+  --vmid 200 --hostname nordvpn-taiwan --ip 192.168.1.50 \
+  --country Taiwan \
+  --login-token '<PAT>' \
+  --force
 ```
+
+See `SetupNordVPN/create-nordvpn-lxc.sh --help` (header comments) for all options.
 
 ---
 
