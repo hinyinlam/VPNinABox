@@ -157,6 +157,7 @@ do_login() {
   # First-run prompts for privacy consent — answer 'y' non-interactively
   printf 'y\n' | nordvpn login --token "$LOGIN_TOKEN" 2>&1 \
     | grep -v "^$" | head -5 || true
+  sleep 3  # daemon needs time to register token before account check is valid
   ok "Logged in"
 }
 
@@ -200,8 +201,10 @@ configure_nordvpn() {
       nick_out=$(nordvpn meshnet set nickname "$mesh_nick" 2>&1) || true
       if echo "$nick_out" | grep -qi "now set to"; then
         ok "Meshnet nickname set to $mesh_nick"
-      elif echo "$nick_out" | grep -qi "already"; then
-        ok "Meshnet nickname already set ($nick_out)"
+      elif echo "$nick_out" | grep -qi "already\|unavailable"; then
+        warn "Meshnet nickname skipped: $nick_out"
+      elif echo "$nick_out" | grep -qi "trouble\|having trouble\|it's not you"; then
+        warn "Meshnet nickname API transiently unavailable — will retry on next run"
       else
         warn "Meshnet nickname: $nick_out"
       fi
