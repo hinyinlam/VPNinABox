@@ -126,18 +126,20 @@ list_redirects() {
 }
 
 # ── Remove redirect for a source IP ──────────────────────────────────────────
+# Deletes the UCI rule AND the route for that table if no other rules use it.
 remove_redirect() {
   local src_ip="$1"
   echo ""
   echo -e "  Removing redirect for ${src_ip}..."
 
   owrt_ssh "
+    removed_table=''
     changed=0
-    count=\$(uci show network 2>/dev/null | grep -c '@rule\[' || true)
     i=0
-    while [ \$i -lt \$count ]; do
-      src=\$(uci get network.@rule[\$i].src 2>/dev/null) || { i=\$((i+1)); continue; }
+    while true; do
+      src=\$(uci get network.@rule[\$i].src 2>/dev/null) || break
       if [ \"\$src\" = \"${src_ip}/32\" ] || [ \"\$src\" = \"${src_ip}\" ]; then
+        removed_table=\$(uci get network.@rule[\$i].lookup 2>/dev/null || true)
         uci delete network.@rule[\$i]
         uci commit network
         changed=1
@@ -145,10 +147,36 @@ remove_redirect() {
       fi
       i=\$((i+1))
     done
-    if [ \$changed -eq 1 ]; then
+
+    if [ \$changed -eq 1 ] && [ -n \"\$removed_table\" ]; then
+      # Remove route for that table only if no other rule still references it
+      still_used=0
+      i=0
+      while true; do
+        lookup=\$(uci get network.@rule[\$i].lookup 2>/dev/null) || break
+        if [ \"\$lookup\" = \"\$removed_table\" ]; then
+          still_used=1
+          break
+        fi
+        i=\$((i+1))
+      done
+
+      if [ \$still_used -eq 0 ]; then
+        i=0
+        while true; do
+          tbl=\$(uci get network.@route[\$i].table 2>/dev/null) || break
+          if [ \"\$tbl\" = \"\$removed_table\" ]; then
+            uci delete network.@route[\$i]
+            uci commit network
+            break
+          fi
+          i=\$((i+1))
+        done
+      fi
+
       /etc/init.d/network reload >/dev/null 2>&1
       echo 'removed'
-    else
+    elif [ \$changed -eq 0 ]; then
       echo 'not_found'
     fi
   "
