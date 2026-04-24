@@ -191,6 +191,20 @@ configure_nordvpn() {
     out=$(nordvpn set meshnet on 2>&1) || true
     if echo "$out" | grep -qi "already enabled\|successfully"; then
       ok "Meshnet enabled"
+      # Set this device's meshnet nickname to the system hostname.
+      # NordVPN rejects names starting with "nordvpn-" (reserved prefix),
+      # so strip it: "nordvpn-us" → "us-exit", plain names used as-is.
+      local raw_nick="${DESIRED_HOSTNAME#nordvpn-}"
+      local mesh_nick="${raw_nick}-exit"
+      local nick_out
+      nick_out=$(nordvpn meshnet set nickname "$mesh_nick" 2>&1) || true
+      if echo "$nick_out" | grep -qi "now set to"; then
+        ok "Meshnet nickname set to $mesh_nick"
+      elif echo "$nick_out" | grep -qi "already"; then
+        ok "Meshnet nickname already set ($nick_out)"
+      else
+        warn "Meshnet nickname: $nick_out"
+      fi
       break
     elif echo "$out" | grep -qi "trouble reaching\|connection refused"; then
       ((retries--))
@@ -384,14 +398,17 @@ verify() {
   nat_count=$(iptables -t nat -L POSTROUTING -n -v 2>/dev/null | grep -c "nordlynx" || true)
   fwd_sysctl=$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo "0")
 
-  local mesh_hostname
+  local mesh_hostname mesh_nickname
   mesh_hostname=$(nordvpn meshnet peer list 2>/dev/null \
     | awk '/^This device/{found=1} found && /^Hostname:/{print $2; exit}') || true
+  mesh_nickname=$(nordvpn meshnet peer list 2>/dev/null \
+    | awk '/^This device/{found=1} found && /^Nickname:/{if(NF>1) print $2; else print "-"; exit}') || true
 
   echo "  VPN status   : $status"
   echo "  Country      : $country"
   echo "  Exit IP      : $exit_ip"
   echo "  Mesh hostname: ${mesh_hostname:-not registered yet}"
+  echo "  Mesh nickname: ${mesh_nickname:--}"
   echo "  System host  : $(hostname)"
   echo "  FORWARD rules: $fwd_count"
   echo "  NAT rules    : $nat_count"
