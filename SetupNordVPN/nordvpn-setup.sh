@@ -91,8 +91,9 @@ install_nordvpn() {
   apt-get install -y gnupg curl ca-certificates iptables iptables-persistent -qq
 
   log "Adding NordVPN apt repo..."
+  rm -f /usr/share/keyrings/nordvpn.gpg
   curl -fsSL https://repo.nordvpn.com/gpg/nordvpn_public.asc \
-    | gpg --dearmor -o /usr/share/keyrings/nordvpn.gpg
+    | gpg --batch --dearmor -o /usr/share/keyrings/nordvpn.gpg
   echo "deb [signed-by=/usr/share/keyrings/nordvpn.gpg] https://repo.nordvpn.com/deb/nordvpn/debian stable main" \
     > /etc/apt/sources.list.d/nordvpn.list
   apt-get update -qq
