@@ -10,9 +10,10 @@
 #   All persisted via 'uci commit + network reload' — survives reboots cleanly.
 #
 # Usage:
-#   ./openwrt-switch-ip-to-nordvpn-gw.sh              # interactive
-#   ./openwrt-switch-ip-to-nordvpn-gw.sh --list       # show current redirects
-#   ./openwrt-switch-ip-to-nordvpn-gw.sh --remove <source-ip>
+#   ./openwrt-switch-ip-to-nordvpn-gw.sh                        # interactive
+#   ./openwrt-switch-ip-to-nordvpn-gw.sh --list                 # show current redirects
+#   ./openwrt-switch-ip-to-nordvpn-gw.sh --remove <source-ip>   # remove by client IP
+#   ./openwrt-switch-ip-to-nordvpn-gw.sh --remove-gateway <gw>  # remove all rules for a gateway
 
 set -euo pipefail
 
@@ -31,10 +32,12 @@ set -a; source "$ENV_FILE"; set +a
 # ── Flags ─────────────────────────────────────────────────────────────────────
 MODE="interactive"
 REMOVE_IP=""
+REMOVE_GW=""
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --list)   MODE="list";                    shift ;;
-    --remove) MODE="remove"; REMOVE_IP="$2"; shift 2 ;;
+    --list)            MODE="list";                         shift ;;
+    --remove)          MODE="remove";    REMOVE_IP="$2";   shift 2 ;;
+    --remove-gateway)  MODE="rmgw";      REMOVE_GW="$2";   shift 2 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -295,6 +298,69 @@ discover_gateways() {
   done < <(echo "$raw" | awk 'NR>1 && $2=="running" && tolower($NF) ~ /nordvpn/ {print $1 " " $2 " " $NF}')
 }
 
+# ── Remove all redirects pointing to a gateway IP ─────────────────────────────
+# Used by DeleteNordVPNGateway.sh before destroying an LXC.
+remove_by_gateway() {
+  local gw_ip="$1"
+  echo ""
+  echo -e "  Removing all OpenWRT redirects via gateway ${gw_ip}..."
+
+  result=$(owrt_ssh "
+    removed=0
+    # Loop over routes; find those whose gateway matches; collect table IDs
+    i=0
+    while true; do
+      gw=\$(uci get network.@route[\$i].gateway 2>/dev/null) || break
+      if [ \"\$gw\" = \"${gw_ip}\" ]; then
+        tbl=\$(uci get network.@route[\$i].table 2>/dev/null || true)
+        if [ -n \"\$tbl\" ]; then
+          # Remove all rules referencing this table
+          keep_going=1
+          while [ \$keep_going -eq 1 ]; do
+            keep_going=0
+            j=0
+            while true; do
+              lookup=\$(uci get network.@rule[\$j].lookup 2>/dev/null) || break
+              if [ \"\$lookup\" = \"\$tbl\" ]; then
+                src=\$(uci get network.@rule[\$j].src 2>/dev/null || echo '?')
+                uci delete network.@rule[\$j]
+                uci commit network
+                echo \"removed_rule \$src table \$tbl\"
+                removed=\$((removed+1))
+                keep_going=1
+                break
+              fi
+              j=\$((j+1))
+            done
+          done
+        fi
+        # Remove the route itself
+        uci delete network.@route[\$i]
+        uci commit network
+        echo \"removed_route table \${tbl:-?} gw ${gw_ip}\"
+        removed=\$((removed+1))
+        i=0  # indices shifted, restart
+        continue
+      fi
+      i=\$((i+1))
+    done
+    if [ \$removed -gt 0 ]; then
+      /etc/init.d/network reload >/dev/null 2>&1
+    fi
+    echo \"total_removed \$removed\"
+  ") || result="error"
+
+  echo "$result" | while IFS= read -r line; do
+    case "$line" in
+      removed_rule*) echo -e "  ${GREEN}✓ Rule removed:  ${line#removed_rule }${RESET}" ;;
+      removed_route*) echo -e "  ${GREEN}✓ Route removed: ${line#removed_route }${RESET}" ;;
+      total_removed\ 0) echo -e "  ${DIM}No redirects found for gateway ${gw_ip}${RESET}" ;;
+      total_removed*) ;;
+    esac
+  done
+  echo ""
+}
+
 # ── --list ────────────────────────────────────────────────────────────────────
 if [[ "$MODE" == "list" ]]; then
   list_redirects
@@ -305,6 +371,13 @@ fi
 if [[ "$MODE" == "remove" ]]; then
   [[ -n "$REMOVE_IP" ]] || { echo "ERROR: --remove requires an IP"; exit 1; }
   remove_redirect "$REMOVE_IP"
+  exit 0
+fi
+
+# ── --remove-gateway ──────────────────────────────────────────────────────────
+if [[ "$MODE" == "rmgw" ]]; then
+  [[ -n "$REMOVE_GW" ]] || { echo "ERROR: --remove-gateway requires an IP"; exit 1; }
+  remove_by_gateway "$REMOVE_GW"
   exit 0
 fi
 

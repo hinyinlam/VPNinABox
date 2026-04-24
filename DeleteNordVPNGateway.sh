@@ -22,6 +22,7 @@ set -a; source "$ENV_FILE"; set +a
 # ── SSH helper ────────────────────────────────────────────────────────────────
 pxm_ssh() {
   sshpass -p "$PROXMOX_PASSWORD" ssh \
+    -n \
     -o StrictHostKeyChecking=no \
     -o PreferredAuthentications=password \
     -o NumberOfPasswordPrompts=1 \
@@ -119,6 +120,12 @@ if [[ "$confirm" != "$target_name" ]]; then
   exit 1
 fi
 
+# ── Get LXC IP before destroying (needed for OpenWRT cleanup) ────────────────
+lxc_ip=$(pxm_ssh "pct config ${target_vmid}" \
+  | grep "^net0:" \
+  | grep -oE 'ip=[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' \
+  | cut -d= -f2) || lxc_ip=""
+
 # ── Delete: stop then destroy ──────────────────────────────────────────────────
 echo ""
 if [[ "$target_status" == "running" ]]; then
@@ -130,4 +137,17 @@ fi
 echo -e "  Destroying LXC ${target_vmid} (--purge)..."
 pxm_ssh "pct destroy ${target_vmid} --purge"
 echo -e "  ${GREEN}✓ LXC ${target_vmid} (${target_name}) destroyed${RESET}"
+
+# ── Clean up OpenWRT routes that pointed to this gateway ─────────────────────
+OPENWRT_SCRIPT="${SCRIPT_DIR}/openwrt-switch-ip-to-nordvpn-gw.sh"
+if [[ -n "$lxc_ip" && -n "${OPENWRT_HOST:-}" && -n "${OPENWRT_PASSWORD:-}" && -f "$OPENWRT_SCRIPT" ]]; then
+  echo ""
+  echo -e "  Cleaning up OpenWRT routes for gateway ${lxc_ip}..."
+  bash "$OPENWRT_SCRIPT" --remove-gateway "$lxc_ip" || \
+    echo -e "  ${YELLOW}⚠ OpenWRT cleanup failed — remove manually with:${RESET}"
+    echo -e "  ${DIM}  $OPENWRT_SCRIPT --remove-gateway ${lxc_ip}${RESET}"
+elif [[ -z "$lxc_ip" ]]; then
+  echo -e "  ${YELLOW}⚠ Could not determine LXC IP — skipping OpenWRT cleanup${RESET}"
+fi
+
 echo ""
