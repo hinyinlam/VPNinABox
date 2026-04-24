@@ -10,10 +10,11 @@
 #   All persisted via 'uci commit + network reload' — survives reboots cleanly.
 #
 # Usage:
-#   ./openwrt-switch-ip-to-nordvpn-gw.sh                        # interactive
-#   ./openwrt-switch-ip-to-nordvpn-gw.sh --list                 # show current redirects
-#   ./openwrt-switch-ip-to-nordvpn-gw.sh --remove <source-ip>   # remove by client IP
-#   ./openwrt-switch-ip-to-nordvpn-gw.sh --remove-gateway <gw>  # remove all rules for a gateway
+#   ./openwrt-switch-ip-to-nordvpn-gw.sh                                      # interactive
+#   ./openwrt-switch-ip-to-nordvpn-gw.sh --list                               # show current redirects
+#   ./openwrt-switch-ip-to-nordvpn-gw.sh --remove <source-ip>                 # remove by client IP
+#   ./openwrt-switch-ip-to-nordvpn-gw.sh --remove-gateway <gw>                # remove all rules for a gateway
+#   ./openwrt-switch-ip-to-nordvpn-gw.sh --apply --src-ip <ip> --gateway <gw> # non-interactive apply
 
 set -euo pipefail
 
@@ -33,11 +34,16 @@ set -a; source "$ENV_FILE"; set +a
 MODE="interactive"
 REMOVE_IP=""
 REMOVE_GW=""
+APPLY_SRC=""
+APPLY_GW=""
 while [[ $# -gt 0 ]]; do
   case $1 in
     --list)            MODE="list";                         shift ;;
     --remove)          MODE="remove";    REMOVE_IP="$2";   shift 2 ;;
     --remove-gateway)  MODE="rmgw";      REMOVE_GW="$2";   shift 2 ;;
+    --apply)           MODE="apply";                        shift ;;
+    --src-ip)          APPLY_SRC="$2";                     shift 2 ;;
+    --gateway)         APPLY_GW="$2";                      shift 2 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -378,6 +384,14 @@ fi
 if [[ "$MODE" == "rmgw" ]]; then
   [[ -n "$REMOVE_GW" ]] || { echo "ERROR: --remove-gateway requires an IP"; exit 1; }
   remove_by_gateway "$REMOVE_GW"
+  exit 0
+fi
+
+# ── --apply (non-interactive) ──────────────────────────────────────────────────
+if [[ "$MODE" == "apply" ]]; then
+  [[ -n "$APPLY_SRC" ]] || { echo "ERROR: --apply requires --src-ip <ip>"; exit 1; }
+  [[ -n "$APPLY_GW"  ]] || { echo "ERROR: --apply requires --gateway <gw>"; exit 1; }
+  apply_redirect "$APPLY_SRC" "$APPLY_GW" "$APPLY_GW"
   exit 0
 fi
 
