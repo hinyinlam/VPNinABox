@@ -12,6 +12,8 @@
 # Options:
 #   --country   <name>   VPN exit country (default: Taiwan)
 #   --subnet    <cidr>   LAN subnet to forward through VPN (default: 192.168.1.0/24)
+#   --name      <str>    Hostname to use for this machine + NordVPN meshnet identity.
+#                        Defaults to nordvpn-<country_lowercase> (e.g. nordvpn-us, nordvpn-taiwan).
 #   --login-token <tok>  NordVPN Personal Access Token for non-interactive login.
 #                        IMPORTANT: Use a PAT from nordvpn.com/en/user/nordaccount-settings/tokens
 #                        NOT the device token from "nordvpn token" — device tokens cannot
@@ -20,7 +22,7 @@
 #   --verify             Only run verification checks, no changes
 #
 # Env overrides:
-#   NORDVPN_COUNTRY, NORDVPN_LAN_SUBNET, NORDVPN_TOKEN, NORDVPN_INSTALL, NORDVPN_VERIFY
+#   NORDVPN_COUNTRY, NORDVPN_LAN_SUBNET, NORDVPN_HOSTNAME, NORDVPN_TOKEN, NORDVPN_INSTALL, NORDVPN_VERIFY
 #
 # Requires: root, Debian/Ubuntu LXC
 
@@ -30,6 +32,7 @@ set -euo pipefail
 COUNTRY="${NORDVPN_COUNTRY:-Taiwan}"
 LAN_SUBNET="${NORDVPN_LAN_SUBNET:-192.168.1.0/24}"
 MESHNET_SUBNET="100.64.0.0/10"
+DESIRED_HOSTNAME="${NORDVPN_HOSTNAME:-}"   # set after flag parsing; default derived from country
 LOGIN_TOKEN="${NORDVPN_TOKEN:-}"
 INSTALL="${NORDVPN_INSTALL:-false}"
 VERIFY_ONLY="${NORDVPN_VERIFY:-false}"
@@ -37,14 +40,20 @@ VERIFY_ONLY="${NORDVPN_VERIFY:-false}"
 # ── Flags ─────────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --country)      COUNTRY="$2";      shift 2 ;;
-    --subnet)       LAN_SUBNET="$2";   shift 2 ;;
-    --login-token)  LOGIN_TOKEN="$2";  shift 2 ;;
-    --install)      INSTALL=true;      shift   ;;
-    --verify)       VERIFY_ONLY=true;  shift   ;;
+    --country)      COUNTRY="$2";           shift 2 ;;
+    --subnet)       LAN_SUBNET="$2";        shift 2 ;;
+    --name)         DESIRED_HOSTNAME="$2";  shift 2 ;;
+    --login-token)  LOGIN_TOKEN="$2";       shift 2 ;;
+    --install)      INSTALL=true;           shift   ;;
+    --verify)       VERIFY_ONLY=true;       shift   ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
+
+# Derive default hostname from country if not explicitly set
+if [[ -z "$DESIRED_HOSTNAME" ]]; then
+  DESIRED_HOSTNAME="nordvpn-$(echo "$COUNTRY" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
+fi
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 log()  { echo "[$(date '+%H:%M:%S')] $*"; }
@@ -75,6 +84,38 @@ nordvpn_retry() {
 }
 
 [[ $EUID -eq 0 ]] || fail "Run as root"
+
+# ── 0. Hostname ───────────────────────────────────────────────────────────────
+# Sets system hostname = NordVPN meshnet identity for this node.
+# nordvpnd reads /etc/hostname on registration; restart daemon after any change.
+set_hostname() {
+  local current
+  current=$(hostname 2>/dev/null || cat /etc/hostname 2>/dev/null || echo "")
+  if [[ "$current" == "$DESIRED_HOSTNAME" ]]; then
+    ok "Hostname already set to $DESIRED_HOSTNAME"
+    return
+  fi
+  log "Setting hostname: $current → $DESIRED_HOSTNAME"
+  hostnamectl set-hostname "$DESIRED_HOSTNAME" 2>/dev/null \
+    || echo "$DESIRED_HOSTNAME" > /etc/hostname
+
+  # Update /etc/hosts — replace old hostname entry so DNS resolves locally
+  if grep -q "$current" /etc/hosts 2>/dev/null; then
+    sed -i "s/\b${current}\b/$DESIRED_HOSTNAME/g" /etc/hosts
+  else
+    grep -q "127.0.1.1" /etc/hosts \
+      && sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t$DESIRED_HOSTNAME/" /etc/hosts \
+      || echo "127.0.1.1	$DESIRED_HOSTNAME" >> /etc/hosts
+  fi
+
+  # Restart nordvpnd if running so it re-registers with the new hostname in meshnet
+  if systemctl is-active --quiet nordvpnd 2>/dev/null; then
+    systemctl restart nordvpnd
+    sleep 5
+    ok "nordvpnd restarted — will register as $DESIRED_HOSTNAME in meshnet"
+  fi
+  ok "Hostname set to $DESIRED_HOSTNAME"
+}
 
 # ── 1. Install ────────────────────────────────────────────────────────────────
 install_nordvpn() {
@@ -343,9 +384,15 @@ verify() {
   nat_count=$(iptables -t nat -L POSTROUTING -n -v 2>/dev/null | grep -c "nordlynx" || true)
   fwd_sysctl=$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo "0")
 
+  local mesh_hostname
+  mesh_hostname=$(nordvpn meshnet peer list 2>/dev/null \
+    | awk '/^This device/{found=1} found && /^Hostname:/{print $2; exit}') || true
+
   echo "  VPN status   : $status"
   echo "  Country      : $country"
   echo "  Exit IP      : $exit_ip"
+  echo "  Mesh hostname: ${mesh_hostname:-not registered yet}"
+  echo "  System host  : $(hostname)"
   echo "  FORWARD rules: $fwd_count"
   echo "  NAT rules    : $nat_count"
   echo "  IP forwarding: $fwd_sysctl"
@@ -378,7 +425,8 @@ main() {
     exit 0
   fi
 
-  log "NordVPN setup: country=$COUNTRY subnet=$LAN_SUBNET"
+  log "NordVPN setup: country=$COUNTRY subnet=$LAN_SUBNET name=$DESIRED_HOSTNAME"
+  set_hostname
   install_nordvpn
   verify_login
   configure_nordvpn
