@@ -53,9 +53,11 @@ fail() { echo "  ✗ $*" >&2; exit 1; }
 
 PROVISIONER="${SCRIPT_DIR}/SetupNordVPN/create-nordvpn-lxc.sh"
 SETUP_SCRIPT="${SCRIPT_DIR}/SetupNordVPN/nordvpn-setup.sh"
-[[ -f "$PROVISIONER" ]]   || fail "SetupNordVPN/create-nordvpn-lxc.sh not found"
-[[ -f "$SETUP_SCRIPT" ]]  || fail "SetupNordVPN/nordvpn-setup.sh not found"
-[[ -x "$PROVISIONER" ]]   || chmod +x "$PROVISIONER"
+WATCHDOG_SCRIPT="${SCRIPT_DIR}/SetupNordVPN/nordvpn-watchdog.sh"
+[[ -f "$PROVISIONER" ]]     || fail "SetupNordVPN/create-nordvpn-lxc.sh not found"
+[[ -f "$SETUP_SCRIPT" ]]    || fail "SetupNordVPN/nordvpn-setup.sh not found"
+[[ -f "$WATCHDOG_SCRIPT" ]] || fail "SetupNordVPN/nordvpn-watchdog.sh not found"
+[[ -x "$PROVISIONER" ]]     || chmod +x "$PROVISIONER"
 
 pxm_ssh() {
   sshpass -p "$PROXMOX_PASSWORD" ssh \
@@ -89,12 +91,14 @@ update_node() {
     sleep 5
   fi
 
-  # Push latest nordvpn-setup.sh
-  pxm_scp "$SETUP_SCRIPT" "root@${PROXMOX_HOST}:/tmp/nordvpn-setup.sh"
-  pxm_ssh "pct push $vmid /tmp/nordvpn-setup.sh /usr/local/bin/nordvpn-setup.sh && \
-    pct exec $vmid -- chmod +x /usr/local/bin/nordvpn-setup.sh && \
-    rm -f /tmp/nordvpn-setup.sh"
-  ok "nordvpn-setup.sh updated in LXC $vmid"
+  # Push latest scripts
+  pxm_scp "$SETUP_SCRIPT"    "root@${PROXMOX_HOST}:/tmp/nordvpn-setup.sh"
+  pxm_scp "$WATCHDOG_SCRIPT" "root@${PROXMOX_HOST}:/tmp/nordvpn-watchdog.sh"
+  pxm_ssh "pct push $vmid /tmp/nordvpn-setup.sh    /usr/local/bin/nordvpn-setup.sh    && \
+    pct push $vmid /tmp/nordvpn-watchdog.sh /usr/local/bin/nordvpn-watchdog.sh && \
+    pct exec $vmid -- chmod +x /usr/local/bin/nordvpn-setup.sh /usr/local/bin/nordvpn-watchdog.sh && \
+    rm -f /tmp/nordvpn-setup.sh /tmp/nordvpn-watchdog.sh"
+  ok "nordvpn-setup.sh + nordvpn-watchdog.sh updated in LXC $vmid"
 
   # Re-run setup (idempotent — no --install needed, NordVPN already present)
   pxm_ssh "pct exec $vmid -- bash /usr/local/bin/nordvpn-setup.sh \

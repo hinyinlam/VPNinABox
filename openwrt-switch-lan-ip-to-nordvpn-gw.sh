@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# openwrt-switch-ip-to-nordvpn-gw.sh — policy-route a LAN device through a
+# openwrt-switch-lan-ip-to-nordvpn-gw.sh — policy-route a LAN device through a
 # chosen NordVPN gateway on OpenWRT using proper UCI persistence.
 #
 # How it works:
@@ -10,11 +10,11 @@
 #   All persisted via 'uci commit + network reload' — survives reboots cleanly.
 #
 # Usage:
-#   ./openwrt-switch-ip-to-nordvpn-gw.sh                                      # interactive
-#   ./openwrt-switch-ip-to-nordvpn-gw.sh --list                               # show current redirects
-#   ./openwrt-switch-ip-to-nordvpn-gw.sh --remove <source-ip>                 # remove by client IP
-#   ./openwrt-switch-ip-to-nordvpn-gw.sh --remove-gateway <gw>                # remove all rules for a gateway
-#   ./openwrt-switch-ip-to-nordvpn-gw.sh --apply --src-ip <ip> --gateway <gw> # non-interactive apply
+#   ./openwrt-switch-lan-ip-to-nordvpn-gw.sh                                      # interactive
+#   ./openwrt-switch-lan-ip-to-nordvpn-gw.sh --list                               # show current redirects
+#   ./openwrt-switch-lan-ip-to-nordvpn-gw.sh --remove <source-ip>                 # remove by client IP
+#   ./openwrt-switch-lan-ip-to-nordvpn-gw.sh --remove-gateway <gw>                # remove all rules for a gateway
+#   ./openwrt-switch-lan-ip-to-nordvpn-gw.sh --apply --src-ip <ip> --gateway <gw> # non-interactive apply
 
 set -euo pipefail
 
@@ -23,7 +23,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ── Load .env ─────────────────────────────────────────────────────────────────
 ENV_FILE="${SCRIPT_DIR}/.env"
 [[ -f "$ENV_FILE" ]] || { echo "ERROR: .env not found."; exit 1; }
-set -a; source "$ENV_FILE"; set +a
+set -a
+# shellcheck source=/dev/null
+source "$ENV_FILE"
+set +a
 
 [[ -n "${OPENWRT_HOST:-}"     ]] || { echo "ERROR: OPENWRT_HOST missing in .env";     exit 1; }
 [[ -n "${OPENWRT_PASSWORD:-}" ]] || { echo "ERROR: OPENWRT_PASSWORD missing in .env"; exit 1; }
@@ -71,7 +74,7 @@ pxm_ssh() {
 }
 
 # ── Colors ────────────────────────────────────────────────────────────────────
-GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'
+GREEN='\033[0;32m'; CYAN='\033[0;36m'
 BOLD='\033[1m'; DIM='\033[2m'; RED='\033[0;31m'; RESET='\033[0m'
 
 # ── Connectivity check ────────────────────────────────────────────────────────

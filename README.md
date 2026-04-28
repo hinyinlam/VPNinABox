@@ -64,6 +64,12 @@ pct stop    201
 pct destroy 201 --purge
 ```
 
+Prefer `DeleteNordVPNGateway.sh` for normal deletion. It prompts for confirmation, deregisters Meshnet on the target when possible, removes stale Meshnet peer entries from remaining running nodes, removes persisted Meshnet source routes that reference the deleted gateway, and cleans OpenWrt LAN redirects pointing at the gateway IP.
+
+```bash
+./DeleteNordVPNGateway.sh
+```
+
 ### Recreate an LXC from Scratch
 
 Use `SetupNordVPN/create-nordvpn-lxc.sh` — run this from your **local machine**, not the Proxmox host. It handles LXC creation, TUN passthrough, script injection, and full NordVPN setup in one command.
@@ -194,6 +200,48 @@ sudo ip route replace default via 192.168.1.1    # restore
 
 Settings → Wi-Fi → your network → (i) → Configure IP → Manual → Router → `192.168.1.51`
 
+### OpenWrt Policy Routing for One LAN IP
+
+Use `openwrt-switch-lan-ip-to-nordvpn-gw.sh` when the source is a normal LAN device IP and OpenWrt should steer that device through a selected NordVPN LXC gateway.
+
+Flow:
+
+```text
+LAN device -> OpenWrt policy rule -> selected NordVPN LXC -> NordVPN country -> internet
+```
+
+Show current OpenWrt redirects:
+
+```bash
+./openwrt-switch-lan-ip-to-nordvpn-gw.sh --list
+```
+
+Route one LAN client through Taiwan node `192.168.1.50`:
+
+```bash
+./openwrt-switch-lan-ip-to-nordvpn-gw.sh --apply --src-ip 192.168.1.123 --gateway 192.168.1.50
+```
+
+Route the same LAN client through US node `192.168.1.51`:
+
+```bash
+./openwrt-switch-lan-ip-to-nordvpn-gw.sh --apply --src-ip 192.168.1.123 --gateway 192.168.1.51
+```
+
+Remove the redirect so the LAN client uses the normal WAN path again:
+
+```bash
+./openwrt-switch-lan-ip-to-nordvpn-gw.sh --remove 192.168.1.123
+```
+
+Remove all OpenWrt redirects that point to a deleted gateway:
+
+```bash
+./openwrt-switch-lan-ip-to-nordvpn-gw.sh --remove-gateway 192.168.1.50
+```
+
+This script persists routes in OpenWrt UCI, so they survive router reboot.
+
 ---
 
 ## Meshnet Access (Remote Devices)
@@ -211,6 +259,85 @@ nordvpn set meshnet on
 nordvpn meshnet peer list          # LXC appears as hinyinlam-*.nord, nickname: us-exit
 nordvpn meshnet peer connect hinyinlam-<name>.nord
 ```
+
+### Meshnet Peer Exit Routing
+
+Use `switch-mesh-ip-to-nordvpn-gw.sh` when the source is a Meshnet peer IP and routing should happen inside the NordVPN LXC layer, not on OpenWrt.
+
+Flow for same-node exit:
+
+```text
+Mesh peer -> ingress LXC -> same LXC nordlynx -> NordVPN country -> internet
+```
+
+Flow for cross-node double NAT:
+
+```text
+Mesh peer -> ingress LXC -> exit LXC LAN IP -> exit LXC nordlynx -> NordVPN country -> internet
+```
+
+List saved Meshnet source routes on an ingress node:
+
+```bash
+./switch-mesh-ip-to-nordvpn-gw.sh --list --ingress-node 200
+```
+
+Preview the route plan without changing live routing:
+
+```bash
+./switch-mesh-ip-to-nordvpn-gw.sh --dry-run --apply \
+  --src-mesh-ip 100.84.138.178 \
+  --ingress-node 200 \
+  --exit-node 201 \
+  --ingress-ip 192.168.1.50 \
+  --exit-ip 192.168.1.51
+```
+
+Same-node exit through node 200's current NordVPN country:
+
+```bash
+./switch-mesh-ip-to-nordvpn-gw.sh --apply --src-mesh-ip 100.84.138.178 --node 200
+```
+
+Explicit same-node form. If `--ingress-node` and `--exit-node` are the same, the script treats it as same-node VPN exit and normalizes the exit IP to the ingress IP:
+
+```bash
+./switch-mesh-ip-to-nordvpn-gw.sh --apply \
+  --src-mesh-ip 100.84.138.178 \
+  --ingress-node 200 \
+  --exit-node 200
+```
+
+Cross-node double NAT, where mesh traffic enters Taiwan node 200 and exits through US node 201:
+
+```bash
+./switch-mesh-ip-to-nordvpn-gw.sh --apply \
+  --src-mesh-ip 100.84.138.178 \
+  --ingress-node 200 \
+  --exit-node 201
+```
+
+Cross-node double NAT in the opposite direction, where mesh traffic enters US node 201 and exits through Taiwan node 200:
+
+```bash
+./switch-mesh-ip-to-nordvpn-gw.sh --apply \
+  --src-mesh-ip 100.84.138.178 \
+  --ingress-node 201 \
+  --exit-node 200
+```
+
+Remove a Meshnet peer route from the ingress node:
+
+```bash
+./switch-mesh-ip-to-nordvpn-gw.sh --remove \
+  --src-mesh-ip 100.84.138.178 \
+  --ingress-node 200 \
+  --exit-node 201
+```
+
+The script persists routes inside the ingress LXC via `/etc/nordvpn-mesh-routing/routes.tsv` and restores them through `nordvpn-mesh-routing.service` plus `nordvpn-mesh-routing.timer`.
+
+Use `openwrt-switch-lan-ip-to-nordvpn-gw.sh` for `192.168.1.x` LAN clients. Use `switch-mesh-ip-to-nordvpn-gw.sh` for NordVPN Meshnet peer IPs, usually in `100.64.0.0/10` such as `100.84.138.178`.
 
 ---
 
@@ -233,7 +360,17 @@ ssh root@192.168.1.185 "pct exec 201 -- bash -c '
 ```
 VPNinABox/
 ├── SetupNordVPN/
-│   └── nordvpn-setup.sh   # Idempotent NordVPN LXC setup script
-├── AGENTS.md               # AI agent guidelines for this repo
-└── README.md               # This file
+│   ├── create-nordvpn-lxc.sh       # Create a Proxmox LXC and run setup
+│   ├── nordvpn-setup.sh            # Idempotent NordVPN LXC setup script
+│   └── nordvpn-watchdog.sh         # Periodic VPN/Meshnet/routing self-heal
+├── setup-nordvpn.sh                # Provision/update all nodes from .env
+├── GetAvailableNordVPNGateway.sh   # Show running NordVPN gateways
+├── SwitchNordVPNConnection.sh      # Reconnect or change an LXC VPN country
+├── DeleteNordVPNGateway.sh         # Delete a NordVPN LXC and clean routes
+├── openwrt-switch-lan-ip-to-nordvpn-gw.sh
+├── switch-mesh-ip-to-nordvpn-gw.sh
+├── tests/
+│   └── test_mesh_switch_script.sh
+├── AGENTS.md                       # AI agent guidelines for this repo
+└── README.md                       # This file
 ```

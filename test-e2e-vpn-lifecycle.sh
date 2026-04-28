@@ -22,7 +22,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${SCRIPT_DIR}/.env"
 [[ -f "$ENV_FILE" ]] || { echo "ERROR: .env not found."; exit 1; }
-set -a; source "$ENV_FILE"; set +a
+set -a
+# shellcheck source=/dev/null
+source "$ENV_FILE"
+set +a
 
 [[ -n "${PROXMOX_HOST:-}"     ]] || { echo "ERROR: PROXMOX_HOST missing in .env";     exit 1; }
 [[ -n "${PROXMOX_PASSWORD:-}" ]] || { echo "ERROR: PROXMOX_PASSWORD missing in .env"; exit 1; }
@@ -160,8 +163,8 @@ fi
 step "Step 3: Apply OpenWRT redirect  ${TEST_CLIENT} → ${TEST_IP}"
 
 if [[ "$OPENWRT_AVAILABLE" == "true" ]]; then
-  OWRT_SCRIPT="${SCRIPT_DIR}/openwrt-switch-ip-to-nordvpn-gw.sh"
-  [[ -f "$OWRT_SCRIPT" ]] || { echo "ERROR: openwrt-switch-ip-to-nordvpn-gw.sh not found"; exit 1; }
+  OWRT_SCRIPT="${SCRIPT_DIR}/openwrt-switch-lan-ip-to-nordvpn-gw.sh"
+  [[ -f "$OWRT_SCRIPT" ]] || { echo "ERROR: openwrt-switch-lan-ip-to-nordvpn-gw.sh not found"; exit 1; }
   bash "$OWRT_SCRIPT" --apply --src-ip "$TEST_CLIENT" --gateway "$TEST_IP"
   pass "Redirect applied"
 else
@@ -225,7 +228,7 @@ fi
 step "Step 6: Clean OpenWRT routes for gateway ${TEST_IP}"
 
 if [[ "$OPENWRT_AVAILABLE" == "true" ]]; then
-  OWRT_SCRIPT="${SCRIPT_DIR}/openwrt-switch-ip-to-nordvpn-gw.sh"
+  OWRT_SCRIPT="${SCRIPT_DIR}/openwrt-switch-lan-ip-to-nordvpn-gw.sh"
   bash "$OWRT_SCRIPT" --remove-gateway "$TEST_IP"
   pass "OpenWRT --remove-gateway ${TEST_IP} completed"
 else

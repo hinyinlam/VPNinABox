@@ -209,6 +209,11 @@ configure_nordvpn() {
         warn "Meshnet nickname: $nick_out"
       fi
       break
+    elif echo "$out" | grep -qi "maximum device count\|device limit"; then
+      warn "Meshnet device limit reached on this NordVPN account."
+      warn "Remove stale devices at: https://my.nordaccount.com/dashboard/nordvpn/meshnet/"
+      warn "Then re-run: nordvpn set meshnet on   (or let the watchdog service retry)"
+      break
     elif echo "$out" | grep -qi "trouble reaching\|connection refused"; then
       ((retries--))
       warn "Meshnet API not ready, retrying in 10s... ($retries left)"
@@ -381,13 +386,43 @@ ExecStop=/usr/sbin/iptables -t nat -D POSTROUTING -s ${LAN_SUBNET} -o nordlynx -
 WantedBy=multi-user.target
 EOF
 
+  # Watchdog: checks VPN + meshnet + iptables every 60s, self-heals if anything is down
+  cat > /etc/systemd/system/nordvpn-watchdog.service << EOF
+[Unit]
+Description=NordVPN watchdog health check
+After=nordvpnd.service nordvpn-autoconnect.service
+Wants=nordvpnd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/nordvpn-watchdog.sh
+Environment=NORDVPN_LAN_SUBNET=${LAN_SUBNET}
+StandardOutput=journal
+StandardError=journal
+EOF
+
+  cat > /etc/systemd/system/nordvpn-watchdog.timer << EOF
+[Unit]
+Description=NordVPN watchdog — run every 60s
+Requires=nordvpn-watchdog.service
+
+[Timer]
+OnBootSec=120s
+OnUnitActiveSec=60s
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
+EOF
+
   # Retire old fragmented services
   systemctl disable nordvpn-meshnet.service meshnet-routes.service 2>/dev/null || true
   systemctl stop    nordvpn-meshnet.service meshnet-routes.service 2>/dev/null || true
 
   systemctl daemon-reload
   systemctl enable nordvpn-autoconnect.service nordvpn-subnet-routing.service
-  ok "Services nordvpn-autoconnect + nordvpn-subnet-routing enabled"
+  systemctl enable --now nordvpn-watchdog.timer
+  ok "Services nordvpn-autoconnect + nordvpn-subnet-routing + nordvpn-watchdog enabled"
 }
 
 # ── 9. Verify ─────────────────────────────────────────────────────────────────

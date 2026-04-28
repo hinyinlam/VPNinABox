@@ -82,7 +82,9 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SETUP_SCRIPT="$SCRIPT_DIR/nordvpn-setup.sh"
-[[ -f "$SETUP_SCRIPT" ]] || { echo "ERROR: nordvpn-setup.sh not found at $SETUP_SCRIPT"; exit 1; }
+WATCHDOG_SCRIPT="$SCRIPT_DIR/nordvpn-watchdog.sh"
+[[ -f "$SETUP_SCRIPT" ]]    || { echo "ERROR: nordvpn-setup.sh not found at $SETUP_SCRIPT"; exit 1; }
+[[ -f "$WATCHDOG_SCRIPT" ]] || { echo "ERROR: nordvpn-watchdog.sh not found at $WATCHDOG_SCRIPT"; exit 1; }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 log()  { echo "[$(date '+%H:%M:%S')] $*"; }
@@ -121,6 +123,8 @@ ok "Proxmox reachable"
 # ── 2. Optionally destroy existing LXC ───────────────────────────────────────
 if [[ "$FORCE" == "true" ]]; then
   log "Destroying existing LXC $VMID (--force)..."
+  # Deregister meshnet first to free the device slot
+  pxm_ssh "pct exec $VMID -- nordvpn set meshnet off 2>/dev/null || true" 2>/dev/null || true
   pxm_ssh "pct stop $VMID 2>/dev/null || true; pct destroy $VMID --purge 2>/dev/null || true"
   ok "LXC $VMID removed"
 else
@@ -160,13 +164,15 @@ sleep 10
 actual_host=$(pxm_ssh "pct exec $VMID -- hostname 2>/dev/null" | tr -d '\r\n')
 ok "LXC $VMID running (hostname: $actual_host)"
 
-# ── 6. Copy nordvpn-setup.sh into LXC ────────────────────────────────────────
-log "Copying nordvpn-setup.sh into LXC $VMID..."
-pxm_scp "$SETUP_SCRIPT" "${PROXMOX_USER}@${PROXMOX_HOST}:/tmp/nordvpn-setup.sh"
-pxm_ssh "pct push $VMID /tmp/nordvpn-setup.sh /usr/local/bin/nordvpn-setup.sh && \
-  pct exec $VMID -- chmod +x /usr/local/bin/nordvpn-setup.sh && \
-  rm -f /tmp/nordvpn-setup.sh"
-ok "nordvpn-setup.sh deployed to LXC at /usr/local/bin/"
+# ── 6. Copy scripts into LXC ─────────────────────────────────────────────────
+log "Copying scripts into LXC $VMID..."
+pxm_scp "$SETUP_SCRIPT"    "${PROXMOX_USER}@${PROXMOX_HOST}:/tmp/nordvpn-setup.sh"
+pxm_scp "$WATCHDOG_SCRIPT" "${PROXMOX_USER}@${PROXMOX_HOST}:/tmp/nordvpn-watchdog.sh"
+pxm_ssh "pct push $VMID /tmp/nordvpn-setup.sh    /usr/local/bin/nordvpn-setup.sh    && \
+  pct push $VMID /tmp/nordvpn-watchdog.sh /usr/local/bin/nordvpn-watchdog.sh && \
+  pct exec $VMID -- chmod +x /usr/local/bin/nordvpn-setup.sh /usr/local/bin/nordvpn-watchdog.sh && \
+  rm -f /tmp/nordvpn-setup.sh /tmp/nordvpn-watchdog.sh"
+ok "nordvpn-setup.sh + nordvpn-watchdog.sh deployed to LXC at /usr/local/bin/"
 
 # ── 7. Run NordVPN setup ──────────────────────────────────────────────────────
 log "Running NordVPN setup inside LXC (country=$COUNTRY)..."
